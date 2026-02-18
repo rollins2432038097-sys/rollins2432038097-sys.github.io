@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>在线申论答题纸</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #f5f5f5;
+    padding: 20px;
+    font-family: "SimSun", "STSong", serif;
+  }
+  .container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 30px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 20px;
+    font-weight: normal;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 10px;
+  }
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 15px;
+    padding: 8px;
+    background: #f8f8f8;
+  }
+  button {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #4285f4;
+    color: white;
+  }
+  button.del { background: #ea4335; }
+  .word-count { line-height: 32px; color: #666; }
+  .answer-paper { border: 1px solid #ccc; padding: 20px; background: #fff; }
+  .question { margin-bottom: 30px; }
+  .q-title {
+    font-size: 18px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .q-title button { padding: 4px 8px; font-size: 12px; }
+
+  /* 核心：原生textarea，保证输入顺序正常 */
+  .writing {
+    position: relative;
+    width: 400px;
+    height: 500px;
+    margin: 0 auto;
+    border: 1px solid #ccc;
+    background: #fff;
+    overflow: hidden;
+  }
+  /* 下层：纯背景格子，20×25 */
+  .grid {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    grid-template-columns: repeat(20, 20px);
+    grid-template-rows: repeat(25, 20px);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .cell {
+    width: 20px;
+    height: 20px;
+    border: 1px solid #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    box-sizing: border-box;
+  }
+  /* 上层：原生textarea */
+  .input-area {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    padding: 0 0 0 2px;
+    margin: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: transparent;
+    caret-color: #000;
+    font-family: "SimSun", "STSong", monospace;
+    font-size: 18px;
+    line-height: 20px;
+    letter-spacing: 2px;
+    resize: none;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-all;
+    overflow: auto;
+    cursor: text;
+  }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>在线申论答题纸</h1>
+  <div class="toolbar">
+    <div>
+      <button id="add">添加答题区域</button>
+      <button id="clear" class="del">清空所有内容</button>
+    </div>
+    <div class="word-count">总字数：<span id="count">0</span></div>
+  </div>
+
+  <div class="answer-paper" id="paper"></div>
+</div>
+
+<script>
+  const paper = document.getElementById('paper');
+  const count = document.getElementById('count');
+  const COLS = 20;
+  const ROWS = 25;
+  const TOTAL_CELLS = COLS * ROWS;
+
+  // 半角转全角
+  function toFullWidth(str) {
+    let result = '';
+    for (let i = 0; i < str.length; i++) {
+      let code = str.charCodeAt(i);
+      if (code === 32) result += String.fromCharCode(12288);
+      else if (code >= 33 && code <= 126) result += String.fromCharCode(code + 65248);
+      else result += str.charAt(i);
+    }
+    return result;
+  }
+
+  // 创建答题区域
+  function createWriting() {
+    const writing = document.createElement('div');
+    writing.className = 'writing';
+    
+    // 下层格子
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    const gridCells = [];
+    for (let i = 0; i < TOTAL_CELLS; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      grid.appendChild(cell);
+      gridCells.push(cell);
+    }
+    
+    // 上层原生textarea
+    const input = document.createElement('textarea');
+    input.className = 'input-area';
+    input.placeholder = '请在此处输入答案...';
+    
+    writing.appendChild(input);
+    writing.appendChild(grid);
+
+    // 状态：是否正在输入中文
+    let isComposing = false;
+
+    // 核心同步逻辑：保留换行符位置
+    function sync() {
+      // 1. 先清空所有格子
+      gridCells.forEach(cell => cell.textContent = '');
+      
+      // 2. 遍历输入框文字，保留换行符位置
+      let textIndex = 0; // 输入框文字的索引
+      let cellIndex = 0; // 格子的索引
+      
+      while (textIndex < input.value.length && cellIndex < TOTAL_CELLS) {
+        const char = input.value[textIndex];
+        
+        if (char === '\n') {
+          // 遇到换行符：跳到下一行开头
+          const currentRow = Math.floor(cellIndex / COLS);
+          cellIndex = (currentRow + 1) * COLS;
+          textIndex++;
+        } else {
+          // 普通字符：转全角并填入格子
+          const fullChar = toFullWidth(char);
+          if (fullChar) {
+            gridCells[cellIndex].textContent = fullChar;
+          }
+          textIndex++;
+          cellIndex++;
+        }
+      }
+      
+      // 3. 更新字数
+      updateCount();
+    }
+
+    // 中文输入法开始
+    input.addEventListener('compositionstart', () => {
+      isComposing = true;
+    });
+
+    // 中文输入法结束（选完词）
+    input.addEventListener('compositionend', () => {
+      isComposing = false;
+      // 选完词后，轻量处理全角转换（不修改光标）
+      const cursorPos = input.selectionStart;
+      const fullText = toFullWidth(input.value);
+      input.value = fullText;
+      input.selectionStart = cursorPos;
+      input.selectionEnd = cursorPos;
+      sync();
+    });
+
+    // 普通输入
+    input.addEventListener('input', () => {
+      if (!isComposing) {
+        sync();
+      }
+    });
+    
+    // 暴露方法
+    writing.clear = () => {
+      input.value = '';
+      gridCells.forEach(cell => cell.textContent = '');
+      updateCount();
+    };
+    writing.getCount = () => {
+      return input.value.replace(/\s/g, '').length;
+    };
+
+    return writing;
+  }
+
+  // 新建题目
+  function newQuestion(num) {
+    const q = document.createElement('div');
+    q.className = 'question';
+    q.innerHTML = `
+      <div class="q-title">
+        <span>第${num}题</span>
+        <button class="del delete">删除</button>
+      </div>
+    `;
+    q.append(createWriting());
+    paper.appendChild(q);
+
+    q.querySelector('.delete').onclick = () => {
+      if (document.querySelectorAll('.question').length <= 1) return alert('至少保留1题');
+      q.remove();
+      renumber();
+      updateCount();
+    };
+    updateCount();
+  }
+
+  // 重新编号
+  function renumber() {
+    document.querySelectorAll('.question').forEach((el, i) => {
+      el.querySelector('.q-title span').textContent = `第${i+1}题`;
+    });
+  }
+
+  // 统计字数
+  function updateCount() {
+    let total = 0;
+    document.querySelectorAll('.writing').forEach(w => total += w.getCount());
+    count.textContent = total;
+  }
+
+  // 初始化
+  newQuestion(1);
+  add.onclick = () => newQuestion(document.querySelectorAll('.question').length + 1);
+  clear.onclick = () => {
+    if (!confirm('确定清空所有内容？')) return;
+    document.querySelectorAll('.writing').forEach(w => w.clear());
+  };
+</script>
+</body>
+</html>
